@@ -1,12 +1,20 @@
 """FastAPI application for trend discovery agent."""
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from google_trends_client import GoogleTrendsClient
 from twitter_client import TwitterClient
 from cache_manager import CacheManager
+from scoring_algorithm import (
+    ScoringAlgorithm,
+    TrendScore,
+    create_tech_scorer,
+    create_entertainment_scorer,
+    create_business_scorer,
+    create_default_scorer,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -29,6 +37,20 @@ trends_client = GoogleTrendsClient(cache_manager=cache_manager)
 # Separate cache for Twitter to avoid key conflicts
 twitter_cache = CacheManager(db_path="cache/twitter.db", ttl_hours=1)
 twitter_client = TwitterClient(cache_manager=twitter_cache)
+
+# Initialize scoring algorithms
+tech_scorer = create_tech_scorer()
+entertainment_scorer = create_entertainment_scorer()
+business_scorer = create_business_scorer()
+default_scorer = create_default_scorer()
+
+# Map of scorer types
+SCORERS = {
+    "tech": tech_scorer,
+    "entertainment": entertainment_scorer,
+    "business": business_scorer,
+    "default": default_scorer,
+}
 
 
 # Pydantic models
@@ -97,6 +119,25 @@ class TwitterTimelineResponse(BaseModel):
     timestamp: str
     note: Optional[str] = None
     error: Optional[str] = None
+
+
+class ScoredTrendResponse(BaseModel):
+    """Response model for a single scored trend."""
+    trend: str
+    relevance_score: float
+    velocity_score: float
+    audience_score: float
+    overall_score: float
+    rank: int
+    component_scores: Dict[str, float]
+
+
+class TrendsScoresResponse(BaseModel):
+    """Response model for multiple scored trends."""
+    scorer_type: str
+    trends_count: int
+    scored_trends: List[ScoredTrendResponse]
+    timestamp: str
 
 
 # Health check
@@ -320,13 +361,146 @@ async def clear_twitter_cache(key: Optional[str] = Query(None, description="Spec
     }
 
 
+# Scoring endpoints
+@app.post("/score/trends", response_model=TrendsScoresResponse)
+async def score_trends(
+    trends: List[str] = Query(..., description="List of trend strings to score"),
+    scorer_type: str = Query("default", description="Scorer type: 'tech', 'entertainment', 'business', 'default'"),
+    metadata: Optional[str] = Query(None, description="Optional JSON metadata for trends"),
+):
+    """Score a list of trends using specified scorer.
+
+    Args:
+        trends: List of trend strings to score
+        scorer_type: Type of scorer to use
+        metadata: Optional JSON metadata containing metrics per trend
+
+    Returns:
+        Scored trends with ranks
+    """
+    try:
+        import json
+        from datetime import datetime
+
+        # Get the appropriate scorer
+        scorer = SCORERS.get(scorer_type, default_scorer)
+
+        # Parse metadata if provided
+        trend_metadata = {}
+        if metadata:
+            try:
+                trend_metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON metadata: {metadata}")
+
+        # Score the trends
+        scored_trends = scorer.score_trends(trends, metadata=trend_metadata)
+
+        # Convert to response format
+        response_trends = [
+            ScoredTrendResponse(
+                trend=st.trend,
+                relevance_score=round(st.relevance_score, 2),
+                velocity_score=round(st.velocity_score, 2),
+                audience_score=round(st.audience_score, 2),
+                overall_score=round(st.overall_score, 2),
+                rank=st.rank,
+                component_scores={
+                    k: round(v, 2) for k, v in st.component_scores.items()
+                },
+            )
+            for st in scored_trends
+        ]
+
+        return TrendsScoresResponse(
+            scorer_type=scorer_type,
+            trends_count=len(trends),
+            scored_trends=response_trends,
+            timestamp=datetime.utcnow().isoformat(),
+        )
+
+    except Exception as e:
+        logger.error(f"Error scoring trends: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/score/scorers", response_model=Dict[str, str])
+async def list_scorers():
+    """List available scorers and their descriptions.
+
+    Returns:
+        Dictionary of scorer types and descriptions
+    """
+    return {
+        "tech": "Optimized for technology and programming trends",
+        "entertainment": "Optimized for entertainment, celebrity, and media trends",
+        "business": "Optimized for business, finance, and startup trends",
+        "default": "General-purpose scorer with no specific optimizations",
+    }
+
+
+@app.post("/score/trend", response_model=ScoredTrendResponse)
+async def score_single_trend(
+    trend: str = Query(..., description="Trend string to score"),
+    scorer_type: str = Query("default", description="Scorer type"),
+    position: int = Query(0, description="Position in trending list"),
+    metadata: Optional[str] = Query(None, description="Optional JSON metadata"),
+):
+    """Score a single trend.
+
+    Args:
+        trend: Trend string to score
+        scorer_type: Type of scorer to use
+        position: Position in trending list (impacts velocity score)
+        metadata: Optional JSON metadata with metrics
+
+    Returns:
+        Scored trend with component scores
+    """
+    try:
+        import json
+        from datetime import datetime
+
+        # Get the appropriate scorer
+        scorer = SCORERS.get(scorer_type, default_scorer)
+
+        # Parse metadata if provided
+        trend_metadata = {}
+        if metadata:
+            try:
+                trend_metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON metadata: {metadata}")
+
+        # Score the single trend
+        scored = scorer.score_single_trend(
+            trend, position=position, metadata=trend_metadata
+        )
+
+        return ScoredTrendResponse(
+            trend=scored.trend,
+            relevance_score=round(scored.relevance_score, 2),
+            velocity_score=round(scored.velocity_score, 2),
+            audience_score=round(scored.audience_score, 2),
+            overall_score=round(scored.overall_score, 2),
+            rank=scored.rank,
+            component_scores={
+                k: round(v, 2) for k, v in scored.component_scores.items()
+            },
+        )
+
+    except Exception as e:
+        logger.error(f"Error scoring trend: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Root endpoint
 @app.get("/")
 async def root():
     """Root endpoint."""
     return {
         "service": "Trend Discovery Agent",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "docs": "/docs",
         "endpoints": {
             "health": "/health",
@@ -344,6 +518,11 @@ async def root():
                 "timeline": "/twitter/timeline?username=elonmusk&max_results=10",
                 "cache_stats": "/twitter/cache/stats",
                 "cache_clear": "/twitter/cache/clear"
+            },
+            "scoring": {
+                "list_scorers": "/score/scorers",
+                "score_single": "/score/trend?trend=Python&scorer_type=tech",
+                "score_multiple": "/score/trends?trends=Python&trends=JavaScript&scorer_type=tech"
             }
         }
     }
