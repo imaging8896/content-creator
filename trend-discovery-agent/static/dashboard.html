@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trend Discovery Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .header h1 {
+            font-size: 32px;
+            font-weight: 700;
+        }
+
+        .header-info {
+            display: flex;
+            gap: 30px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .info-item {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .info-label {
+            font-size: 12px;
+            opacity: 0.9;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .info-value {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            background: white;
+            color: #667eea;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn.refresh {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn.refresh.loading::after {
+            content: '';
+            width: 16px;
+            height: 16px;
+            border: 2px solid #667eea;
+            border-right-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .refresh-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: white;
+            font-size: 14px;
+        }
+
+        .toggle-switch {
+            width: 40px;
+            height: 24px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 12px;
+            cursor: pointer;
+            position: relative;
+            transition: background 0.3s ease;
+            border: none;
+            padding: 2px;
+        }
+
+        .toggle-switch.active {
+            background: rgba(255, 255, 255, 0.7);
+        }
+
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            background: white;
+            border-radius: 10px;
+            top: 2px;
+            left: 2px;
+            transition: left 0.3s ease;
+        }
+
+        .toggle-switch.active::after {
+            left: 18px;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .charts-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+
+        .chart-container {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .chart-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #333;
+        }
+
+        .chart-wrapper {
+            position: relative;
+            height: 300px;
+        }
+
+        .trends-table-container {
+            overflow-x: auto;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+        }
+
+        thead {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        th {
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        td {
+            padding: 15px;
+            border-bottom: 1px solid #e9ecef;
+            font-size: 14px;
+        }
+
+        tbody tr:hover {
+            background: #f8f9fa;
+        }
+
+        .rank {
+            font-weight: 600;
+            color: #667eea;
+            font-size: 16px;
+        }
+
+        .trend-name {
+            font-weight: 500;
+            color: #333;
+        }
+
+        .score {
+            font-weight: 600;
+            font-size: 16px;
+        }
+
+        .score.high {
+            color: #28a745;
+        }
+
+        .score.medium {
+            color: #ffc107;
+        }
+
+        .score.low {
+            color: #dc3545;
+        }
+
+        .score-bar {
+            width: 100%;
+            max-width: 200px;
+            height: 24px;
+            background: #e9ecef;
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .score-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        .metadata {
+            text-align: right;
+            margin-bottom: 20px;
+            color: #666;
+            font-size: 13px;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: #e7f5ff;
+            color: #0066cc;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-badge.live {
+            background: #d3f9d8;
+            color: #2b8a3e;
+        }
+
+        .status-badge.stale {
+            background: #ffe066;
+            color: #856404;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            font-size: 18px;
+            color: #666;
+        }
+
+        .loading::after {
+            content: '';
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            margin-left: 10px;
+            border: 3px solid #667eea;
+            border-right-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+        }
+
+        .error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+
+        .empty-state-text {
+            font-size: 18px;
+            font-weight: 500;
+            margin-bottom: 10px;
+        }
+
+        .refresh-timer {
+            font-size: 12px;
+            color: #999;
+            margin-top: 10px;
+        }
+
+        @media (max-width: 768px) {
+            .header {
+                flex-direction: column;
+                text-align: center;
+            }
+
+            .header h1 {
+                font-size: 24px;
+            }
+
+            .header-info {
+                flex-direction: column;
+                gap: 15px;
+                width: 100%;
+            }
+
+            .charts-section {
+                grid-template-columns: 1fr;
+            }
+
+            table {
+                font-size: 12px;
+            }
+
+            th, td {
+                padding: 10px;
+            }
+
+            .score-bar {
+                max-width: 100px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>📊 Trend Discovery Dashboard</h1>
+            </div>
+            <div class="header-info">
+                <div class="info-item">
+                    <span class="info-label">Total Trends</span>
+                    <span class="info-value" id="trends-count">-</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Last Updated</span>
+                    <span class="info-value" id="last-updated">-</span>
+                </div>
+                <div class="controls">
+                    <button class="btn refresh" id="refresh-btn" title="Refresh data now">
+                        🔄 Refresh
+                    </button>
+                    <div class="refresh-toggle">
+                        <span>Auto</span>
+                        <button class="toggle-switch active" id="auto-refresh-toggle" title="Toggle auto-refresh"></button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="content">
+            <div class="metadata" id="metadata">
+                <span class="status-badge live" id="status-badge">
+                    <span>●</span> Live
+                </span>
+                <span class="refresh-timer" id="refresh-timer"></span>
+            </div>
+
+            <div id="error-container"></div>
+
+            <div id="loading" class="loading" style="display: none;">
+                Loading trends...
+            </div>
+
+            <div id="charts" style="display: none;">
+                <div class="charts-section">
+                    <div class="chart-container">
+                        <div class="chart-title">Top 10 Trends by Score</div>
+                        <div class="chart-wrapper">
+                            <canvas id="top-trends-chart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-container">
+                        <div class="chart-title">Score Distribution</div>
+                        <div class="chart-wrapper">
+                            <canvas id="score-distribution-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="trends-table" style="display: none;">
+                <h2 style="margin-bottom: 20px; color: #333;">Top 20 Trends</h2>
+                <div class="trends-table-container">
+                    <table id="trends-list">
+                        <thead>
+                            <tr>
+                                <th style="width: 50px;">Rank</th>
+                                <th>Trend Name</th>
+                                <th style="width: 120px;">Score</th>
+                                <th style="width: 250px;">Score Distribution</th>
+                                <th style="width: 150px;">Sources</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trends-body">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="empty-state" class="empty-state" style="display: none;">
+                <div class="empty-state-icon">📭</div>
+                <div class="empty-state-text">No trends available yet</div>
+                <p>The trend discovery pipeline hasn't collected data yet. Check back soon!</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_ENDPOINT = '/dashboard';
+        const REFRESH_INTERVAL = 60000; // 60 seconds
+        let autoRefreshEnabled = true;
+        let refreshTimeout = null;
+        let topTrendsChart = null;
+        let scoreDistributionChart = null;
+        let nextRefreshTime = null;
+
+        // Initialize dashboard
+        async function initDashboard() {
+            await loadDashboardData();
+            setupEventListeners();
+            startAutoRefresh();
+        }
+
+        // Setup event listeners
+        function setupEventListeners() {
+            document.getElementById('refresh-btn').addEventListener('click', async () => {
+                const btn = document.getElementById('refresh-btn');
+                btn.classList.add('loading');
+                await loadDashboardData();
+                btn.classList.remove('loading');
+            });
+
+            document.getElementById('auto-refresh-toggle').addEventListener('click', (e) => {
+                autoRefreshEnabled = !autoRefreshEnabled;
+                e.target.classList.toggle('active');
+                if (autoRefreshEnabled) {
+                    startAutoRefresh();
+                } else {
+                    stopAutoRefresh();
+                }
+            });
+        }
+
+        // Load dashboard data from API
+        async function loadDashboardData() {
+            try {
+                clearError();
+                showLoading(true);
+
+                const response = await fetch(`${API_ENDPOINT}?limit=20`);
+                if (!response.ok) {
+                    throw new Error(`API error: ${response.status}`);
+                }
+
+                const data = await response.json();
+                renderDashboard(data);
+                nextRefreshTime = new Date(Date.now() + REFRESH_INTERVAL);
+
+            } catch (error) {
+                console.error('Error loading dashboard data:', error);
+                showError(`Failed to load trends: ${error.message}`);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // Render dashboard with data
+        function renderDashboard(data) {
+            const trends = data.trends || [];
+
+            if (trends.length === 0) {
+                document.getElementById('empty-state').style.display = 'block';
+                document.getElementById('charts').style.display = 'none';
+                document.getElementById('trends-table').style.display = 'none';
+                return;
+            }
+
+            document.getElementById('empty-state').style.display = 'none';
+            document.getElementById('charts').style.display = 'block';
+            document.getElementById('trends-table').style.display = 'block';
+
+            // Update header info
+            document.getElementById('trends-count').textContent = data.trends_count || trends.length;
+            const lastRunTime = new Date(data.last_run?.completed_at || data.timestamp);
+            document.getElementById('last-updated').textContent = lastRunTime.toLocaleTimeString();
+
+            // Update status badge
+            const statusBadge = document.getElementById('status-badge');
+            const minutesSince = (new Date() - lastRunTime) / 60000;
+            if (minutesSince < 5) {
+                statusBadge.className = 'status-badge live';
+                statusBadge.innerHTML = '<span>●</span> Live';
+            } else if (minutesSince < 30) {
+                statusBadge.className = 'status-badge';
+                statusBadge.textContent = '⏱ Recent';
+            } else {
+                statusBadge.className = 'status-badge stale';
+                statusBadge.textContent = '⏳ Stale';
+            }
+
+            // Render table
+            renderTrendsTable(trends);
+
+            // Render charts
+            renderCharts(trends);
+        }
+
+        // Render trends table
+        function renderTrendsTable(trends) {
+            const tbody = document.getElementById('trends-body');
+            tbody.innerHTML = '';
+
+            trends.forEach((trend, index) => {
+                const score = trend.overall_score || trend.opportunity_score || trend.score || 0;
+                const scorePercentage = Math.min(100, Math.max(0, score * 10)); // Normalize score to 0-100
+                let scoreClass = 'high';
+                if (scorePercentage < 40) scoreClass = 'low';
+                else if (scorePercentage < 70) scoreClass = 'medium';
+
+                const sources = trend.source || 'N/A';
+
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="rank">#${index + 1}</td>
+                    <td class="trend-name">${escapeHtml(trend.trend || 'Unknown')}</td>
+                    <td class="score ${scoreClass}">${score.toFixed(2)}</td>
+                    <td>
+                        <div class="score-bar">
+                            <div class="score-fill" style="width: ${scorePercentage}%; background: ${getScoreColor(scorePercentage)};">
+                                ${Math.round(scorePercentage)}%
+                            </div>
+                        </div>
+                    </td>
+                    <td>${sources}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        // Render charts
+        function renderCharts(trends) {
+            // Top 10 trends chart
+            const top10 = trends.slice(0, 10);
+            const labels = top10.map(t => truncate(t.trend || 'Unknown', 15));
+            const scores = top10.map(t => t.overall_score || t.opportunity_score || t.score || 0);
+
+            if (topTrendsChart) {
+                topTrendsChart.data.labels = labels;
+                topTrendsChart.data.datasets[0].data = scores;
+                topTrendsChart.update();
+            } else {
+                const ctx = document.getElementById('top-trends-chart').getContext('2d');
+                topTrendsChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Opportunity Score',
+                            data: scores,
+                            backgroundColor: 'rgba(102, 126, 234, 0.8)',
+                            borderColor: 'rgba(102, 126, 234, 1)',
+                            borderWidth: 1,
+                            borderRadius: 4,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                max: 10,
+                                ticks: {
+                                    callback: function(value) {
+                                        return value.toFixed(1);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Score distribution chart
+            const scoreBuckets = {
+                'High (8-10)': 0,
+                'Medium (5-7)': 0,
+                'Low (0-4)': 0
+            };
+
+            trends.forEach(t => {
+                const score = t.overall_score || t.opportunity_score || t.score || 0;
+                if (score >= 8) scoreBuckets['High (8-10)']++;
+                else if (score >= 5) scoreBuckets['Medium (5-7)']++;
+                else scoreBuckets['Low (0-4)']++;
+            });
+
+            const distLabels = Object.keys(scoreBuckets);
+            const distData = Object.values(scoreBuckets);
+            const colors = ['rgba(40, 167, 69, 0.8)', 'rgba(255, 193, 7, 0.8)', 'rgba(220, 53, 69, 0.8)'];
+
+            if (scoreDistributionChart) {
+                scoreDistributionChart.data.labels = distLabels;
+                scoreDistributionChart.data.datasets[0].data = distData;
+                scoreDistributionChart.update();
+            } else {
+                const ctx = document.getElementById('score-distribution-chart').getContext('2d');
+                scoreDistributionChart = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: distLabels,
+                        datasets: [{
+                            data: distData,
+                            backgroundColor: colors,
+                            borderColor: 'white',
+                            borderWidth: 2,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'bottom',
+                                labels: {
+                                    padding: 15,
+                                    font: {
+                                        size: 13
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        // Auto-refresh functionality
+        function startAutoRefresh() {
+            clearAutoRefresh();
+            updateRefreshTimer();
+            refreshTimeout = setInterval(async () => {
+                if (autoRefreshEnabled) {
+                    await loadDashboardData();
+                }
+            }, REFRESH_INTERVAL);
+        }
+
+        function stopAutoRefresh() {
+            clearAutoRefresh();
+        }
+
+        function clearAutoRefresh() {
+            if (refreshTimeout) {
+                clearInterval(refreshTimeout);
+                refreshTimeout = null;
+            }
+        }
+
+        function updateRefreshTimer() {
+            const updateTimer = () => {
+                if (!nextRefreshTime) {
+                    nextRefreshTime = new Date(Date.now() + REFRESH_INTERVAL);
+                }
+                const now = new Date();
+                const secondsUntilRefresh = Math.max(0, Math.floor((nextRefreshTime - now) / 1000));
+                const timerEl = document.getElementById('refresh-timer');
+                if (timerEl && autoRefreshEnabled) {
+                    timerEl.textContent = `Auto-refresh in ${secondsUntilRefresh}s`;
+                }
+            };
+
+            updateTimer();
+            setInterval(updateTimer, 1000);
+        }
+
+        // Helper functions
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+        }
+
+        function showError(message) {
+            const container = document.getElementById('error-container');
+            container.innerHTML = `<div class="error">${escapeHtml(message)}</div>`;
+        }
+
+        function clearError() {
+            document.getElementById('error-container').innerHTML = '';
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function truncate(text, length) {
+            return text.length > length ? text.substring(0, length) + '...' : text;
+        }
+
+        function getScoreColor(percentage) {
+            if (percentage >= 70) return 'linear-gradient(90deg, #28a745 0%, #20c997 100%)';
+            if (percentage >= 40) return 'linear-gradient(90deg, #ffc107 0%, #fd7e14 100%)';
+            return 'linear-gradient(90deg, #dc3545 0%, #e74c3c 100%)';
+        }
+
+        // Start dashboard
+        initDashboard();
+    </script>
+</body>
+</html>

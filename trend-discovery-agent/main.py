@@ -1,8 +1,10 @@
 """FastAPI application for trend discovery agent."""
 import logging
+import os
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -33,6 +35,11 @@ app = FastAPI(
     description="API for discovering trends from Google Trends with caching",
     version="0.1.0"
 )
+
+# Mount static files for dashboard
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # Initialize clients
 cache_manager = CacheManager(db_path="cache/trends.db", ttl_hours=1)
@@ -663,6 +670,17 @@ async def cleanup_old_data(days_to_keep: int = Query(30, ge=1)):
 
 # Add datetime import for startup/shutdown handlers
 from datetime import datetime  # noqa: E402
+
+
+# Dashboard UI endpoint
+@app.get("/dashboard-ui")
+async def get_dashboard_ui():
+    """Serve the dashboard HTML interface."""
+    dashboard_path = os.path.join(os.path.dirname(__file__), "static", "dashboard.html")
+    if os.path.exists(dashboard_path):
+        return FileResponse(dashboard_path, media_type="text/html")
+    else:
+        raise HTTPException(status_code=404, detail="Dashboard UI not found")
 
 
 # Root endpoint
