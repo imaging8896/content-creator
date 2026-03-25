@@ -1,9 +1,11 @@
 """FastAPI application for trend discovery agent."""
 import logging
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from google_trends_client import GoogleTrendsClient
 from twitter_client import TwitterClient
 from cache_manager import CacheManager
@@ -15,6 +17,8 @@ from scoring_algorithm import (
     create_business_scorer,
     create_default_scorer,
 )
+from trend_database import TrendDatabase
+from batch_pipeline import BatchPipeline
 
 # Configure logging
 logging.basicConfig(
@@ -51,6 +55,22 @@ SCORERS = {
     "business": business_scorer,
     "default": default_scorer,
 }
+
+# Initialize database
+trend_db = TrendDatabase(db_path="sqlite:///data/trends.db")
+
+# Initialize batch pipeline
+batch_pipeline = BatchPipeline(
+    db=trend_db,
+    google_trends_client=trends_client,
+    twitter_client=twitter_client,
+    default_scorer=default_scorer,
+    tech_scorer=tech_scorer,
+)
+
+# Initialize scheduler for batch jobs
+scheduler = BackgroundScheduler()
+scheduler_started = False
 
 
 # Pydantic models
@@ -494,14 +514,166 @@ async def score_single_trend(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Batch pipeline endpoints and scheduling
+class BatchStatusResponse(BaseModel):
+    """Response model for batch status."""
+    scheduler_running: bool
+    next_run: Optional[str] = None
+    last_run: Optional[str] = None
+    last_run_status: Optional[str] = None
+    trends_stored: Optional[int] = None
+
+
+class DashboardDataResponse(BaseModel):
+    """Response model for dashboard data."""
+    timestamp: str
+    trends_count: int
+    last_run: Dict[str, Any]
+    trends: List[Dict[str, Any]]
+
+
+def _schedule_batch_job():
+    """Initialize and schedule the batch job."""
+    global scheduler_started
+    if not scheduler_started and not scheduler.running:
+        try:
+            # Schedule batch pipeline to run every hour at minute 0
+            scheduler.add_job(
+                batch_pipeline.run_batch,
+                trigger=CronTrigger(minute=0),  # Run at the top of every hour
+                id="hourly_batch_pipeline",
+                name="Hourly Trend Discovery Batch Pipeline",
+                misfire_grace_time=10,
+                max_instances=1,  # Ensure only one instance runs at a time
+            )
+            scheduler.start()
+            scheduler_started = True
+            logger.info("Batch scheduler started - running at top of every hour")
+        except Exception as e:
+            logger.error(f"Failed to start batch scheduler: {e}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize scheduler on app startup."""
+    logger.info("Trend Discovery Agent starting up...")
+    _schedule_batch_job()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Shutdown scheduler on app shutdown."""
+    global scheduler_started
+    logger.info("Trend Discovery Agent shutting down...")
+    if scheduler.running:
+        scheduler.shutdown()
+        scheduler_started = False
+        logger.info("Batch scheduler stopped")
+
+
+@app.post("/batch/run", response_model=Dict[str, str])
+async def run_batch_now():
+    """Manually trigger batch pipeline execution.
+
+    Returns:
+        Status message with batch run info
+    """
+    try:
+        logger.info("Manual batch trigger requested")
+        success = batch_pipeline.run_batch()
+        return {
+            "status": "completed" if success else "failed",
+            "message": "Batch pipeline executed" if success else "Batch pipeline failed",
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Error running batch: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/batch/status", response_model=BatchStatusResponse)
+async def get_batch_status():
+    """Get batch pipeline status.
+
+    Returns:
+        Current batch scheduler status
+    """
+    try:
+        session = trend_db.get_session()
+        latest_run = trend_db.get_latest_batch_run(session)
+        session.close()
+
+        next_run_time = None
+        if scheduler.running:
+            jobs = scheduler.get_jobs()
+            if jobs:
+                next_run_time = jobs[0].next_run_time.isoformat() if jobs[0].next_run_time else None
+
+        return BatchStatusResponse(
+            scheduler_running=scheduler.running,
+            next_run=next_run_time,
+            last_run=latest_run.completed_at.isoformat() if latest_run and latest_run.completed_at else None,
+            last_run_status=latest_run.status if latest_run else None,
+            trends_stored=latest_run.trends_stored if latest_run else None,
+        )
+    except Exception as e:
+        logger.error(f"Error getting batch status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/dashboard", response_model=DashboardDataResponse)
+async def get_dashboard_data(limit: int = Query(20, ge=1, le=100)):
+    """Get formatted dashboard data with top trends.
+
+    Args:
+        limit: Number of top trends to return (1-100)
+
+    Returns:
+        Dashboard data including top trends and metadata
+    """
+    try:
+        data = batch_pipeline.get_dashboard_data(limit=limit, hours=24)
+        return DashboardDataResponse(**data)
+    except Exception as e:
+        logger.error(f"Error getting dashboard data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/batch/cleanup")
+async def cleanup_old_data(days_to_keep: int = Query(30, ge=1)):
+    """Clean up old trend results from database.
+
+    Args:
+        days_to_keep: Number of days of data to retain (minimum 1)
+
+    Returns:
+        Number of records deleted
+    """
+    try:
+        deleted = batch_pipeline.cleanup_old_data(days_to_keep)
+        return {
+            "deleted_count": deleted,
+            "days_retained": days_to_keep,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Error cleaning up data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Add datetime import for startup/shutdown handlers
+from datetime import datetime  # noqa: E402
+
+
 # Root endpoint
 @app.get("/")
 async def root():
     """Root endpoint."""
     return {
         "service": "Trend Discovery Agent",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "docs": "/docs",
+        "description": "Complete trend discovery, scoring, and batch pipeline system",
         "endpoints": {
             "health": "/health",
             "google_trends": {
@@ -523,6 +695,16 @@ async def root():
                 "list_scorers": "/score/scorers",
                 "score_single": "/score/trend?trend=Python&scorer_type=tech",
                 "score_multiple": "/score/trends?trends=Python&trends=JavaScript&scorer_type=tech"
+            },
+            "batch_pipeline": {
+                "description": "Hourly batch processing for trend discovery and storage",
+                "run_now": "POST /batch/run",
+                "status": "GET /batch/status",
+                "cleanup": "DELETE /batch/cleanup?days_to_keep=30"
+            },
+            "dashboard": {
+                "description": "Dashboard data with top trends",
+                "data": "GET /dashboard?limit=20"
             }
         }
     }
