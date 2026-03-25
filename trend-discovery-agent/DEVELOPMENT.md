@@ -40,6 +40,8 @@ trend-discovery-agent/
 ├── cache_manager.py              # SQLite-based cache with TTL support
 ├── google_trends_client.py       # Google Trends API client with caching
 ├── twitter_client.py             # Twitter/X API client with caching
+├── news_api_client.py            # NewsAPI client with caching and rate limiting (AIC-21)
+├── rate_limiter.py               # Token bucket rate limiter for APIs (AIC-21)
 ├── scoring_algorithm.py          # Trend scoring with relevance/velocity/audience metrics
 ├── trend_database.py             # SQLAlchemy database models and manager
 ├── batch_pipeline.py             # Hourly batch processor (AIC-18)
@@ -48,6 +50,8 @@ trend-discovery-agent/
 ├── test_google_trends_client.py  # Google Trends client tests
 ├── test_twitter_client.py        # Twitter client tests
 ├── test_scoring_algorithm.py     # Scoring algorithm tests
+├── test_news_api_client.py       # NewsAPI client tests
+├── test_rate_limiter.py          # Rate limiter tests
 ├── test_batch_pipeline.py        # Batch pipeline unit and integration tests
 ├── test_cache_standalone.py      # Standalone cache tests (no dependencies)
 ├── requirements.txt              # Python dependencies
@@ -135,6 +139,84 @@ flake8 *.py
 mypy *.py
 ```
 
+## API Endpoints
+
+### Research & Fact-Checking Endpoints (AIC-21)
+
+The trend discovery agent now includes research and fact-checking capabilities powered by NewsAPI.
+
+#### Search News Articles
+```
+GET /research/search?keyword=<keyword>&sort_by=publishedAt&limit=10
+```
+Search for news articles by keyword with caching and rate limiting.
+
+**Query Parameters:**
+- `keyword` (required): Search term or keyword
+- `sort_by` (optional): 'relevancy', 'publishedAt' (default), or 'popularity'
+- `limit` (optional): Number of articles to return (1-100, default 10)
+
+**Response:**
+```json
+{
+  "source": "api|cache|cache_fallback|error",
+  "query": "python",
+  "articles": [...],
+  "total_results": 1250,
+  "timestamp": "2026-03-25T14:30:00Z",
+  "note": "Fresh data from NewsAPI"
+}
+```
+
+#### Get Trending News
+```
+GET /research/trending?country=us&category=technology&limit=10
+```
+Get top headlines for a country with optional category filter.
+
+**Query Parameters:**
+- `country` (optional): Country code ('us', 'in', 'gb', etc., default 'us')
+- `category` (optional): 'business', 'entertainment', 'general', 'health', 'science', 'sports', 'technology'
+- `limit` (optional): Number of articles (1-100, default 10)
+
+#### Get Trend-Related News
+```
+GET /research/trend-news?trend=<trend>&limit=10
+```
+Get news articles related to a specific trending topic for fact-checking and context.
+
+**Query Parameters:**
+- `trend` (required): Trend name or topic
+- `limit` (optional): Number of articles (1-100, default 10)
+
+#### Rate Limit Status
+```
+GET /research/rate-limit
+```
+Get current rate limit status for NewsAPI.
+
+**Response:**
+```json
+{
+  "available_requests": 89,
+  "capacity": 100,
+  "refill_rate": "0.00116 requests/second",
+  "daily_limit": 100,
+  "note": "NewsAPI free tier allows 100 requests per day"
+}
+```
+
+#### Cache Management
+```
+GET /research/cache/stats
+```
+Get NewsAPI cache statistics.
+
+```
+DELETE /research/cache/clear?key=<optional_key>
+```
+Clear cache entries. If `key` is provided, clears only that entry.
+
 ## Configuration
 
 ### Cache Configuration
@@ -146,6 +228,48 @@ The `CacheManager` can be configured with:
 Example:
 ```python
 cache_manager = CacheManager(db_path="cache/trends.db", ttl_hours=1)
+```
+
+### Rate Limiter Configuration
+
+The `RateLimiter` uses token bucket algorithm with configurable daily limits:
+
+```python
+from rate_limiter import RateLimiter
+
+rate_limiter = RateLimiter(custom_limits={
+    "newsapi": 100,        # 100 requests per day
+    "google_trends": 1000, # High limit
+    "twitter": 450         # Twitter free tier
+})
+```
+
+### NewsAPI Client Configuration
+
+The `NewsAPIClient` integrates with caching and rate limiting:
+
+```python
+from news_api_client import NewsAPIClient
+from cache_manager import CacheManager
+from rate_limiter import RateLimiter
+
+cache = CacheManager(db_path="cache/newsapi.db", ttl_hours=3)
+limiter = RateLimiter()
+
+news_client = NewsAPIClient(
+    api_key="your_newsapi_key",  # or NEWSAPI_KEY env var
+    cache_manager=cache,
+    rate_limiter=limiter
+)
+
+# Search for articles
+result = news_client.search_news(query="python", sort_by="publishedAt", page_size=10)
+
+# Get top headlines
+result = news_client.get_top_headlines(country="us", category="technology")
+
+# Check rate limit status
+status = news_client.get_rate_limit_status()
 ```
 
 ### Client Configuration
@@ -163,6 +287,31 @@ client = GoogleTrendsClient(
 )
 ```
 
+## Environment Setup
+
+### Required Environment Variables
+
+```bash
+# NewsAPI key (get free key from https://newsapi.org/)
+export NEWSAPI_KEY="your_newsapi_key_here"
+
+# Twitter/X API (optional, for Twitter endpoints)
+export TWITTER_BEARER_TOKEN="your_twitter_bearer_token"
+```
+
+### Create .env file
+
+```bash
+NEWSAPI_KEY=your_key_here
+TWITTER_BEARER_TOKEN=your_token_here
+```
+
+Load with python-dotenv:
+```python
+from dotenv import load_dotenv
+load_dotenv()
+```
+
 ## Known Limitations
 
 1. **Google Trends API**: Uses `pytrends` library which is unofficial reverse-engineered API
@@ -170,29 +319,49 @@ client = GoogleTrendsClient(
    - May break if Google changes their interface
    - Returns data for top 25 trends per region
 
-2. **No Database Persistence**: Current implementation uses SQLite for cache only
-   - Historical data not stored long-term
-   - Phase 2 will add PostgreSQL integration
+2. **NewsAPI Free Tier**: Limited to 100 requests per day
+   - Token bucket rate limiting helps distribute requests evenly
+   - Consider paid plans for higher limits
+   - Caching reduces unnecessary API calls
 
-3. **Single Server**: Current implementation is single-threaded
-   - Phase 2 will add APScheduler for hourly batch jobs
+3. **Database**: Current implementation uses SQLite for both cache and storage
+   - SQLite suitable for single-server deployments
+   - Phase 3 will add PostgreSQL for production-scale systems
 
-## Completed (Phase 1)
+4. **Single Server**: Current implementation designed for single-server deployment
+   - APScheduler for hourly batch jobs
+   - For multi-server deployments, consider using distributed task queue
 
+## Completed
+
+### Phase 1 (Trend Discovery)
 - [x] Integrate Twitter/X API for trending topics
 - [x] Implement trend scoring algorithm
 - [x] Build hourly batch pipeline with APScheduler (AIC-18)
 - [x] SQLite database for trend storage
 - [x] Comprehensive error handling and logging
 
-## Next Steps (Phase 2)
+### Phase 1.5 (Dashboard)
+- [x] Create web dashboard for trend visualization (AIC-19)
+- [x] Interactive charts with Chart.js
+- [x] Real-time data with auto-refresh
 
-- [ ] Create web dashboard for visualization
+### Phase 2 (Research & Fact-Checking)
+- [x] Integrate NewsAPI for research and fact-checking (AIC-21)
+- [x] Implement token bucket rate limiting with per-endpoint tracking
+- [x] Add news search, trending news, and trend-related news endpoints
+- [x] Comprehensive caching strategy for research data
+- [x] Cache fallback on API failures
+
+## Next Steps (Phase 3)
+
 - [ ] Add PostgreSQL for production-scale storage
-- [ ] Add monitoring and alerting
+- [ ] Add monitoring and alerting for API health
 - [ ] Implement trend deduplication across sources
 - [ ] Add webhook notifications for significant trends
-- [ ] Integrate with Content Creation Agent
+- [ ] Integrate fact-checking scores from multiple sources
+- [ ] Create enhanced dashboard with news/articles context
+- [ ] Add trend prediction capabilities
 
 ## Troubleshooting
 

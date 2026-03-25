@@ -11,6 +11,8 @@ from apscheduler.triggers.cron import CronTrigger
 from google_trends_client import GoogleTrendsClient
 from twitter_client import TwitterClient
 from cache_manager import CacheManager
+from news_api_client import NewsAPIClient
+from rate_limiter import RateLimiter
 from scoring_algorithm import (
     ScoringAlgorithm,
     TrendScore,
@@ -48,6 +50,11 @@ trends_client = GoogleTrendsClient(cache_manager=cache_manager)
 # Separate cache for Twitter to avoid key conflicts
 twitter_cache = CacheManager(db_path="cache/twitter.db", ttl_hours=1)
 twitter_client = TwitterClient(cache_manager=twitter_cache)
+
+# Initialize rate limiter and NewsAPI client
+rate_limiter = RateLimiter()
+news_cache = CacheManager(db_path="cache/newsapi.db", ttl_hours=3)
+news_client = NewsAPIClient(cache_manager=news_cache, rate_limiter=rate_limiter)
 
 # Initialize scoring algorithms
 tech_scorer = create_tech_scorer()
@@ -165,6 +172,58 @@ class TrendsScoresResponse(BaseModel):
     trends_count: int
     scored_trends: List[ScoredTrendResponse]
     timestamp: str
+
+
+# NewsAPI models
+class NewsArticle(BaseModel):
+    """News article object."""
+    title: str
+    description: Optional[str] = None
+    url: str
+    urlToImage: Optional[str] = None
+    publishedAt: str
+    source: Optional[Dict[str, str]] = None
+    content: Optional[str] = None
+    author: Optional[str] = None
+
+
+class NewsSearchResponse(BaseModel):
+    """Response model for news search."""
+    source: str  # 'api', 'cache', 'cache_fallback', 'error'
+    query: str
+    articles: List[NewsArticle]
+    total_results: int
+    timestamp: str
+    note: Optional[str] = None
+    error: Optional[str] = None
+
+
+class TopHeadlinesResponse(BaseModel):
+    """Response model for top headlines."""
+    source: str
+    country: str
+    articles: List[NewsArticle]
+    timestamp: str
+    note: Optional[str] = None
+    error: Optional[str] = None
+
+
+class TrendWithNewsResponse(BaseModel):
+    """Response model for trend with related news articles."""
+    trend: str
+    overall_score: float
+    articles_count: int
+    articles: List[NewsArticle]
+    timestamp: str
+
+
+class RateLimitStatusResponse(BaseModel):
+    """Response model for rate limit status."""
+    available_requests: int
+    capacity: int
+    refill_rate: str
+    daily_limit: int
+    note: str
 
 
 # Health check
@@ -384,6 +443,147 @@ async def clear_twitter_cache(key: Optional[str] = Query(None, description="Spec
     twitter_cache.clear(key=key)
     return {
         "message": f"Twitter cache cleared: {key or 'all'}",
+        "timestamp": __import__('datetime').datetime.utcnow().isoformat()
+    }
+
+
+# NewsAPI research endpoints
+@app.get("/research/search", response_model=NewsSearchResponse)
+async def search_news(
+    keyword: str = Query(..., description="Search keyword or query"),
+    sort_by: str = Query("publishedAt", description="Sort by: 'relevancy', 'publishedAt', 'popularity'"),
+    limit: int = Query(10, ge=1, le=100, description="Number of articles to return")
+):
+    """Search for news articles about a keyword.
+
+    Args:
+        keyword: Search keyword or query
+        sort_by: Sort order for results
+        limit: Number of articles to return
+
+    Returns:
+        News articles matching the keyword with caching information
+    """
+    try:
+        result = news_client.search_news(query=keyword, sort_by=sort_by, page_size=limit)
+        articles = [NewsArticle(**article) if isinstance(article, dict) else article
+                   for article in result.get("articles", [])]
+        return NewsSearchResponse(
+            source=result.get("source"),
+            query=keyword,
+            articles=articles,
+            total_results=result.get("total_results", 0),
+            timestamp=result.get("timestamp"),
+            note=result.get("note"),
+            error=result.get("error")
+        )
+    except Exception as e:
+        logger.error(f"Error searching news: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/research/trending", response_model=TopHeadlinesResponse)
+async def get_trending_news(
+    country: str = Query("us", description="Country code (e.g., 'us', 'in', 'gb')"),
+    category: Optional[str] = Query(None, description="Category: business, entertainment, general, health, science, sports, technology"),
+    limit: int = Query(10, ge=1, le=100, description="Number of articles to return")
+):
+    """Get trending news and top headlines.
+
+    Args:
+        country: Country code for headlines
+        category: News category to filter by
+        limit: Number of articles to return
+
+    Returns:
+        Top headlines for the country with caching information
+    """
+    try:
+        result = news_client.get_top_headlines(country=country, category=category, page_size=limit)
+        articles = [NewsArticle(**article) if isinstance(article, dict) else article
+                   for article in result.get("articles", [])]
+        return TopHeadlinesResponse(
+            source=result.get("source"),
+            country=country,
+            articles=articles,
+            timestamp=result.get("timestamp"),
+            note=result.get("note"),
+            error=result.get("error")
+        )
+    except Exception as e:
+        logger.error(f"Error fetching trending news: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/research/trend-news", response_model=NewsSearchResponse)
+async def get_trend_news(
+    trend: str = Query(..., description="Trend to find news articles about"),
+    limit: int = Query(10, ge=1, le=100, description="Number of articles to return")
+):
+    """Get news articles related to a specific trend.
+
+    Searches for recent articles about the given trend to provide fact-checking
+    and research context for trending topics.
+
+    Args:
+        trend: Trend name to search for
+        limit: Number of articles to return
+
+    Returns:
+        News articles about the trend
+    """
+    try:
+        result = news_client.search_news(query=trend, sort_by="publishedAt", page_size=limit)
+        articles = [NewsArticle(**article) if isinstance(article, dict) else article
+                   for article in result.get("articles", [])]
+        return NewsSearchResponse(
+            source=result.get("source"),
+            query=trend,
+            articles=articles,
+            total_results=result.get("total_results", 0),
+            timestamp=result.get("timestamp"),
+            note=result.get("note"),
+            error=result.get("error")
+        )
+    except Exception as e:
+        logger.error(f"Error fetching trend news: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/research/rate-limit", response_model=RateLimitStatusResponse)
+async def get_rate_limit_status():
+    """Get current rate limit status for NewsAPI.
+
+    Returns:
+        Rate limit information including available requests and daily limit
+    """
+    try:
+        status = news_client.get_rate_limit_status()
+        return RateLimitStatusResponse(**status)
+    except Exception as e:
+        logger.error(f"Error getting rate limit status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/research/cache/stats", response_model=CacheStatsResponse)
+async def get_news_cache_stats():
+    """Get NewsAPI cache statistics."""
+    return CacheStatsResponse(**news_cache.get_cache_stats())
+
+
+@app.delete("/research/cache/clear")
+async def clear_news_cache(key: Optional[str] = Query(None, description="Specific key to clear")):
+    """Clear NewsAPI cache.
+
+    Args:
+        key: Optional specific key to clear. If not provided, clears all.
+
+    Returns:
+        Status message
+    """
+    news_cache.clear(key=key)
+    return {
+        "message": f"News cache cleared: {key or 'all'}",
         "timestamp": __import__('datetime').datetime.utcnow().isoformat()
     }
 
@@ -708,6 +908,15 @@ async def root():
                 "timeline": "/twitter/timeline?username=elonmusk&max_results=10",
                 "cache_stats": "/twitter/cache/stats",
                 "cache_clear": "/twitter/cache/clear"
+            },
+            "research": {
+                "description": "Research and fact-checking APIs powered by NewsAPI",
+                "search": "/research/search?keyword=python&limit=10",
+                "trending_news": "/research/trending?country=us&limit=10",
+                "trend_news": "/research/trend-news?trend=Python&limit=10",
+                "rate_limit": "/research/rate-limit",
+                "cache_stats": "/research/cache/stats",
+                "cache_clear": "/research/cache/clear"
             },
             "scoring": {
                 "list_scorers": "/score/scorers",
