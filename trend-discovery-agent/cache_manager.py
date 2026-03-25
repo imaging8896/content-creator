@@ -44,7 +44,7 @@ class CacheManager:
             value: Value to cache (will be JSON serialized)
             ttl_seconds: Override TTL for this entry
         """
-        ttl = ttl_seconds or self.ttl_seconds
+        ttl = ttl_seconds if ttl_seconds is not None else self.ttl_seconds
         timestamp = time.time()
         value_json = json.dumps(value)
 
@@ -125,7 +125,7 @@ class CacheManager:
             current_time = time.time()
             cursor.execute("""
                 DELETE FROM cache
-                WHERE (current_time - timestamp) > ttl_seconds
+                WHERE (? - timestamp) > ttl_seconds
             """, (current_time,))
             rows_deleted = cursor.rowcount
             conn.commit()
