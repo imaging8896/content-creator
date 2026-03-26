@@ -8,6 +8,7 @@ import json
 from llm_client import LLMFactory, ContentResponse
 from prompt_templates import PromptTemplateLibrary
 from response_parser import ResponseParser, ParsedContent
+from quality_scorer import QualityScorer
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class GenerationResult:
     model: str
     metadata: Dict[str, Any]
     errors: list
+    quality_score: Optional[Dict[str, Any]] = None
 
 
 class ContentGenerator:
@@ -70,6 +72,7 @@ class ContentGenerator:
                     model="",
                     metadata={},
                     errors=[str(e)],
+                    quality_score=None,
                 )
 
             # Step 2: Prepare template variables
@@ -90,6 +93,7 @@ class ContentGenerator:
                     model="",
                     metadata={},
                     errors=[f"Template rendering error: {str(e)}"],
+                    quality_score=None,
                 )
 
             # Step 4: Get LLM provider
@@ -107,6 +111,7 @@ class ContentGenerator:
                     model="",
                     metadata={},
                     errors=[f"LLM provider error: {str(e)}"],
+                    quality_score=None,
                 )
 
             # Step 5: Generate content
@@ -126,6 +131,7 @@ class ContentGenerator:
                     model=getattr(llm_response, 'model', 'unknown'),
                     metadata={},
                     errors=[f"Generation error: {str(e)}"],
+                    quality_score=None,
                 )
 
             # Step 6: Parse response
@@ -156,6 +162,24 @@ class ContentGenerator:
                 "parser_metadata": parsed.metadata,
             }
 
+            # Calculate quality score
+            quality_score_obj = None
+            try:
+                quality_score_obj = QualityScorer.score(
+                    parsed.content,
+                    request.content_type,
+                )
+                quality_score_dict = {
+                    "overall_score": quality_score_obj.overall_score,
+                    "readability_score": quality_score_obj.readability_score,
+                    "length_score": quality_score_obj.length_score,
+                    "structure_score": quality_score_obj.structure_score,
+                    "metadata": quality_score_obj.metadata,
+                }
+            except Exception as e:
+                logger.warning(f"Error calculating quality score: {e}")
+                quality_score_dict = None
+
             return GenerationResult(
                 success=len(errors) == 0,
                 content=parsed.content,
@@ -163,6 +187,7 @@ class ContentGenerator:
                 model=llm_response.model,
                 metadata=result_metadata,
                 errors=errors,
+                quality_score=quality_score_dict,
             )
 
         except Exception as e:
@@ -174,6 +199,7 @@ class ContentGenerator:
                 model="",
                 metadata={},
                 errors=[f"Unexpected error: {str(e)}"],
+                quality_score=None,
             )
 
     def generate_full_package(

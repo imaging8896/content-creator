@@ -42,6 +42,15 @@ class ContentGenerationRequest(BaseModel):
     )
 
 
+class QualityScoreResponse(BaseModel):
+    """Quality score for generated content."""
+    overall_score: float
+    readability_score: float
+    length_score: float
+    structure_score: float
+    metadata: Dict[str, Any]
+
+
 class ContentGenerationResponse(BaseModel):
     """Response model for content generation."""
     success: bool
@@ -50,6 +59,7 @@ class ContentGenerationResponse(BaseModel):
     model: str
     metadata: Dict[str, Any]
     errors: List[str]
+    quality_score: Optional[QualityScoreResponse] = None
 
 
 class FullPackageRequest(BaseModel):
@@ -108,6 +118,16 @@ async def generate_content(request: ContentGenerationRequest) -> ContentGenerati
         # Generate
         result = generator.generate(gen_request)
 
+        quality_score_response = None
+        if result.quality_score:
+            quality_score_response = QualityScoreResponse(
+                overall_score=result.quality_score['overall_score'],
+                readability_score=result.quality_score['readability_score'],
+                length_score=result.quality_score['length_score'],
+                structure_score=result.quality_score['structure_score'],
+                metadata=result.quality_score['metadata'],
+            )
+
         return ContentGenerationResponse(
             success=result.success,
             content=result.content,
@@ -115,6 +135,7 @@ async def generate_content(request: ContentGenerationRequest) -> ContentGenerati
             model=result.model,
             metadata=result.metadata,
             errors=result.errors,
+            quality_score=quality_score_response,
         )
 
     except ValueError as e:
@@ -153,16 +174,27 @@ async def generate_package(request: FullPackageRequest):
         )
 
         # Convert results to JSON-serializable format
-        return {
-            content_type: {
+        response_dict = {}
+        for content_type, result in results.items():
+            quality_score_dict = None
+            if result.quality_score:
+                quality_score_dict = {
+                    "overall_score": result.quality_score['overall_score'],
+                    "readability_score": result.quality_score['readability_score'],
+                    "length_score": result.quality_score['length_score'],
+                    "structure_score": result.quality_score['structure_score'],
+                    "metadata": result.quality_score['metadata'],
+                }
+
+            response_dict[content_type] = {
                 "success": result.success,
                 "content": result.content,
                 "model": result.model,
                 "metadata": result.metadata,
                 "errors": result.errors,
+                "quality_score": quality_score_dict,
             }
-            for content_type, result in results.items()
-        }
+        return response_dict
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
